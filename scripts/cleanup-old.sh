@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Juspay AI — clean up artifacts left by older versions (@sahyll/ai 0.4.x and
-# the older @sahyll/juspay-claude), so you can run `npx @sahyll/ai` fresh.
+# Juspay AI — clean up EVERYTHING Juspay AI has installed (any version: the
+# @sahyll/ai 0.4.x–0.6.x line and the older @sahyll/juspay-claude), so you can
+# run `npx @sahyll/ai` from a clean slate. Also signs out of agents that cache
+# OAuth tokens, so the next setup re-authenticates fresh.
 #
 # SAFE: this only removes Juspay's OWN entries (docs-mcp-server, juspay-mcp,
-# juspay-docs) and Juspay's own skills/credentials. Your other MCP servers and
-# settings are left untouched. Re-running it is harmless.
+# juspay-docs) and Juspay's own skills/credentials/tokens. Your other MCP
+# servers and settings are left untouched. Re-running it is harmless.
 
 echo "Cleaning up old Juspay AI artifacts…"
 
@@ -23,7 +25,7 @@ clean_json(){ [ -f "$1" ] && node -e "$CLEAN_JS" "$1" 2>/dev/null; }
 
 # 1) Global npm packages + commands
 echo "→ Removing global packages…"
-npm rm -g @sahyll/ai @sahyll/juspay-claude >/dev/null 2>&1
+npm rm -g @sahyll/ai @sahyll/ai-2 @sahyll/juspay-claude >/dev/null 2>&1
 hash -r 2>/dev/null
 
 # 2) Stored credentials / config
@@ -40,6 +42,12 @@ rm -rf "$HOME/.claude/skills/juspay-explainer" \
 # 4) Caches
 rm -f  "$HOME/.claude/mcp-needs-auth-cache.json"
 rm -rf "$HOME/.npm/_npx" >/dev/null 2>&1
+
+# 4b) Sign out — clear each agent's cached OAuth token for our server. Run this
+#     BEFORE removing the config below, so the agent can still resolve the name.
+echo "→ Signing out of agents…"
+command -v codex    >/dev/null 2>&1 && codex mcp logout juspay-mcp >/dev/null 2>&1
+command -v opencode >/dev/null 2>&1 && opencode mcp logout juspay-mcp >/dev/null 2>&1
 
 # 5) Remove our MCP entries from global agent configs (surgical — keeps others)
 echo "→ Cleaning global agent configs…"
@@ -67,4 +75,4 @@ find "$HOME" -maxdepth 6 -not -path "*/node_modules/*" -not -path "*/.git/*" \
 
 echo
 echo "✅ Cleanup complete. Install the new version with:"
-echo "     npx @sahyll/ai"
+echo "     npx @sahyll/ai-2"

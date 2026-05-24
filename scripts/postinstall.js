@@ -21,7 +21,7 @@ const DIM = "\x1B[2m"
 process.stdout.write(`
   ${BOLD}${CYAN}Juspay for AI agents${RESET} installed.
 
-  Next: run ${BOLD}npx @sahyll/ai${RESET} to add the Juspay MCP + skills to your agents.
+  Next: run ${BOLD}npx @sahyll/ai-2${RESET} to add the Juspay MCP + skills to your agents.
   ${DIM}Each agent signs in to the MCP itself the first time you use it (one-time).${RESET}
 
 `)

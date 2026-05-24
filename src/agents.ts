@@ -1,18 +1,22 @@
 /**
- * Agent registry — the single data table that drives MCP config writing and
- * detection. Adding a new agent is a new row here, not new code anywhere else.
+ * Agent registry — the single data table that drives MCP config writing, skills
+ * targeting, detection, and auth. Adding a new agent is a new row here.
  *
  * Each row declares WHERE the agent reads its USER-SCOPE (global) MCP config
- * (path/format/container key) and HOW one server entry is shaped (`entry`).
+ * (path/format/container key), HOW one server entry is shaped (`entry`), its
+ * `skills` CLI slug, and how the dashboard server is authenticated (`authCmd`
+ * if there's a CLI command, plus a human `authHint`).
  *
- * No auth/token handling: we write the server URL only. Each agent runs its own
- * OAuth (MCP authorization spec) the first time the dashboard server is used.
+ * No token handling: we write the server URL only. Each agent runs its own
+ * OAuth — some via a CLI command we run during setup, others in-app on first use.
  */
 
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import which from "which"
+
+import { DASHBOARD_MCP_NAME } from "./servers.js"
 
 const HOME = os.homedir()
 
@@ -27,13 +31,17 @@ export type AgentDef = {
   containerKey: string // "mcpServers" | "mcp" | "servers" | "mcp_servers"
   // --- how one server entry is shaped (URL only) ---
   entry: (url: string) => Record<string, unknown>
+  // --- skills + auth ---
+  skillsSlug?: string
+  authCmd?: string[] // CLI command to authenticate the dashboard server, if any
+  logoutCmd?: string[] // CLI command to clear the agent's cached creds, if any
+  authHint: string // human one-liner for how to authenticate
   // --- detection ---
-  bin?: string // detected if this binary is on PATH
-  homeMarkers?: string[] // home-relative paths that signal the agent is installed
-  vscodeExt?: boolean // special: scan VS Code extensions dir for Copilot
+  bin?: string
+  homeMarkers?: string[]
+  vscodeExt?: boolean
 }
 
-// VS Code stores its user MCP config under the per-platform user data dir.
 function vscodeUserMcp(): string {
   if (process.platform === "darwin") {
     return path.join(HOME, "Library", "Application Support", "Code", "User", "mcp.json")
@@ -46,7 +54,8 @@ function vscodeUserMcp(): string {
 
 // --- per-agent entry shapes (URL only; the agent self-authenticates) ---
 const httpType = (url: string) => ({ type: "http", url }) // Claude, Copilot, VS Code
-const urlOnly = (url: string) => ({ url }) // Codex (TOML), Cursor
+const urlOnly = (url: string) => ({ url }) // Cursor
+const codexEntry = (url: string) => ({ url, enabled: true }) // Codex (TOML)
 const httpUrlField = (url: string) => ({ httpUrl: url }) // Gemini
 const opencodeRemote = (url: string) => ({ type: "remote", url, enabled: true }) // OpenCode
 const windsurfUrl = (url: string) => ({ serverUrl: url }) // Windsurf
@@ -59,6 +68,8 @@ export const AGENTS: AgentDef[] = [
     format: "json",
     containerKey: "mcpServers",
     entry: httpType,
+    skillsSlug: "claude-code",
+    authHint: `/mcp → ${DASHBOARD_MCP_NAME} → Authenticate`,
     bin: "claude",
     homeMarkers: [".claude", ".claude.json"],
   },
@@ -68,7 +79,11 @@ export const AGENTS: AgentDef[] = [
     configPath: path.join(HOME, ".codex", "config.toml"),
     format: "toml",
     containerKey: "mcp_servers",
-    entry: urlOnly,
+    entry: codexEntry,
+    skillsSlug: "codex",
+    authCmd: ["codex", "mcp", "login", DASHBOARD_MCP_NAME],
+    logoutCmd: ["codex", "mcp", "logout", DASHBOARD_MCP_NAME],
+    authHint: `codex mcp login ${DASHBOARD_MCP_NAME}`,
     bin: "codex",
     homeMarkers: [".codex"],
   },
@@ -79,6 +94,8 @@ export const AGENTS: AgentDef[] = [
     format: "json",
     containerKey: "mcpServers",
     entry: httpUrlField,
+    skillsSlug: "gemini-cli",
+    authHint: "it prompts to sign in on first use",
     bin: "gemini",
     homeMarkers: [".gemini"],
   },
@@ -89,6 +106,10 @@ export const AGENTS: AgentDef[] = [
     format: "json",
     containerKey: "mcp",
     entry: opencodeRemote,
+    skillsSlug: "opencode",
+    authCmd: ["opencode", "mcp", "auth", DASHBOARD_MCP_NAME],
+    logoutCmd: ["opencode", "mcp", "logout", DASHBOARD_MCP_NAME],
+    authHint: `opencode mcp auth ${DASHBOARD_MCP_NAME}`,
     bin: "opencode",
     homeMarkers: [path.join(".config", "opencode")],
   },
@@ -99,6 +120,8 @@ export const AGENTS: AgentDef[] = [
     format: "json",
     containerKey: "mcpServers",
     entry: httpType,
+    skillsSlug: "github-copilot",
+    authHint: "in-app (note: Copilot remote-MCP OAuth is currently limited)",
     bin: "copilot",
     homeMarkers: [".copilot"],
   },
@@ -109,6 +132,8 @@ export const AGENTS: AgentDef[] = [
     format: "json",
     containerKey: "mcpServers",
     entry: urlOnly,
+    skillsSlug: "cursor",
+    authHint: "Cursor prompts to authenticate in its MCP settings",
     homeMarkers: [".cursor"],
   },
   {
@@ -118,6 +143,8 @@ export const AGENTS: AgentDef[] = [
     format: "json",
     containerKey: "mcpServers",
     entry: windsurfUrl,
+    skillsSlug: "windsurf",
+    authHint: "Windsurf prompts to authenticate in its MCP panel",
     homeMarkers: [".codeium", ".windsurf"],
   },
   {
@@ -127,6 +154,8 @@ export const AGENTS: AgentDef[] = [
     format: "json",
     containerKey: "servers",
     entry: httpType,
+    skillsSlug: "github-copilot",
+    authHint: "VS Code prompts to authenticate in the MCP view",
     vscodeExt: true,
   },
 ]

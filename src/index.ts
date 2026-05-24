@@ -1,8 +1,9 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process"
 import fs from "node:fs/promises"
 import pc from "picocolors"
 
-import { AGENTS, configFileFor } from "./agents.js"
+import { AGENTS, configFileFor, type AgentDef } from "./agents.js"
 import { removeMcp } from "./mcp-writer.js"
 import { DASHBOARD_MCP_NAME, PACKAGE_NAME } from "./servers.js"
 import { runSetup, type SetupResult } from "./setup.js"
@@ -12,48 +13,74 @@ import { banner, done, info, summaryBox, warn } from "./ui.js"
 function showHelp(): void {
   banner()
   process.stdout.write(`  Usage: npx ${PACKAGE_NAME} [command]\n\n`)
-  process.stdout.write(pc.dim("  Adds the Juspay MCP server + skills to every AI agent installed on this\n"))
-  process.stdout.write(pc.dim("  machine (user scope). Each agent authenticates the MCP itself on first use.\n\n"))
+  process.stdout.write(pc.dim("  Detects your AI agents, lets you pick which get the Juspay MCP + skills,\n"))
+  process.stdout.write(pc.dim("  and authenticates the ones that support it. Each agent owns its own OAuth.\n\n"))
   process.stdout.write("  Commands:\n")
-  process.stdout.write("    (no command)   Detect agents, add the Juspay MCP + skills to each\n")
-  process.stdout.write("    uninstall      Remove the Juspay MCP + skills from all agents\n")
+  process.stdout.write("    (no command)   Pick agents, add the Juspay MCP + skills, authenticate\n")
+  process.stdout.write("    uninstall      Remove the Juspay MCP + skills (and sign out) from all agents\n")
   process.stdout.write("    list           Show which agents have the Juspay MCP configured\n")
   process.stdout.write("    help           Show this help\n\n")
 }
 
-// After setup: agents are configured but each must authenticate the dashboard
-// MCP itself (one-time, in-agent). Tell the user exactly how.
+// Print next steps: agents that still need a one-time manual auth (no CLI auth
+// command, auth failed, or non-interactive). Already-authed / already-configured
+// agents are not nagged.
 function nextSteps(result: SetupResult): void {
   process.stdout.write("\n  " + pc.bold("Next steps") + "\n")
-  process.stdout.write("  " + pc.dim("Open any configured agent and authenticate the Juspay MCP (one-time):") + "\n")
-  process.stdout.write("    " + pc.dim("• Claude Code: run ") + pc.cyan("/mcp") + pc.dim(" → select ") + pc.cyan(DASHBOARD_MCP_NAME) + pc.dim(" → Authenticate") + "\n")
-  process.stdout.write("    " + pc.dim("• Codex:       ") + pc.cyan("codex mcp login " + DASHBOARD_MCP_NAME) + "\n")
-  process.stdout.write("    " + pc.dim("• Others:      they prompt to sign in the first time the MCP is used") + "\n")
-  process.stdout.write("\n  " + pc.dim("docs-mcp-server needs no auth. Remove everything: ") + pc.cyan(`npx ${PACKAGE_NAME} uninstall`) + "\n\n")
+  if (result.pending.length > 0) {
+    process.stdout.write("  " + pc.dim("Authenticate the Juspay MCP in these (one-time):") + "\n")
+    for (const a of result.pending) {
+      process.stdout.write("    " + pc.dim(`• ${a.label}: `) + a.authHint + "\n")
+    }
+  } else {
+    process.stdout.write("  " + pc.dim("All set — your agents are configured and authenticated.") + "\n")
+  }
+  process.stdout.write("\n  " + pc.dim("Remove everything: ") + pc.cyan(`npx ${PACKAGE_NAME} uninstall`) + "\n\n")
 }
 
-async function printSetupSummary(result: SetupResult): Promise<void> {
-  const rows = [
-    { label: "Agents ", value: result.agents.join(", ") },
-    { label: "MCPs   ", value: "docs-mcp-server, juspay-mcp (agent-authenticated)" },
-    { label: "Skills ", value: "integrate (global)" },
+function printSetupSummary(result: SetupResult): void {
+  const rows: { label: string; value: string }[] = [
+    { label: "Agents", value: result.configured.map((a) => a.label).join(", ") },
+    { label: "MCPs", value: "docs-mcp-server, juspay-mcp" },
+    { label: "Skills", value: "integrate" },
   ]
+  if (result.authenticated.length > 0) {
+    rows.push({ label: "Authenticated", value: result.authenticated.map((a) => a.label).join(", ") })
+  }
   summaryBox("Setup complete", rows)
   nextSteps(result)
 }
 
 async function runUninstall(): Promise<void> {
-  const removed: string[] = []
+  const removedAgents: AgentDef[] = []
   for (const a of AGENTS) {
-    if (await removeMcp(a).catch(() => false)) removed.push(a.label)
+    if (await removeMcp(a).catch(() => false)) removedAgents.push(a)
   }
-  if (removed.length > 0) done(`Removed Juspay MCP from: ${removed.join(", ")}`)
+  if (removedAgents.length > 0) done(`Removed Juspay MCP from: ${removedAgents.map((a) => a.label).join(", ")}`)
   else info("• No Juspay MCP entries found")
+
+  // Sign out of agents that cache OAuth creds (best-effort; clears their tokens).
+  const loggedOut: string[] = []
+  for (const a of removedAgents) {
+    if (!a.logoutCmd) continue
+    if (await runCmdQuiet(a.logoutCmd)) loggedOut.push(a.label)
+  }
+  if (loggedOut.length > 0) done(`Signed out of: ${loggedOut.join(", ")}`)
 
   if (await removeSkills()) done("Removed Juspay skills")
   else info("• Skills not auto-removed — remove the `integrate` skill from your agents if needed")
 
   process.stdout.write("\n  " + pc.cyan("Juspay removed.") + "\n\n")
+}
+
+// Run a command silently, best-effort. Resolves true on exit 0, false otherwise.
+function runCmdQuiet(cmd: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    const [bin, ...args] = cmd
+    const child = spawn(bin, args, { stdio: "ignore" })
+    child.on("error", () => resolve(false))
+    child.on("exit", (code) => resolve(code === 0))
+  })
 }
 
 async function runList(): Promise<void> {
@@ -95,7 +122,7 @@ async function main(): Promise<void> {
   }
   if (!command) {
     const result = await runSetup()
-    if (result.agents.length > 0) await printSetupSummary(result)
+    if (result.configured.length > 0) printSetupSummary(result)
     return
   }
 

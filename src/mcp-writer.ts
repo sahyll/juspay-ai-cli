@@ -3,9 +3,8 @@
  * path for every agent, JSON and TOML.
  *
  * We write two URL-only server entries (docs + dashboard) into the agent's
- * user-scope config under its container key, preserving everything else the
- * user has. No token is written: each agent self-authenticates the dashboard
- * server via its own OAuth flow.
+ * user-scope config under its container key, preserving everything else. No
+ * token is written: each agent self-authenticates the dashboard server.
  *
  * Safety: if a config file exists but doesn't parse, we ABORT rather than
  * overwrite — these are real user files (e.g. ~/.claude.json) we must not clobber.
@@ -70,8 +69,8 @@ export async function removeMcp(agent: AgentDef): Promise<boolean> {
   return true
 }
 
-// Read an existing config, or null if the file doesn't exist. Throws (refusing to
-// overwrite) if the file exists but can't be parsed.
+// Read an existing config, or null if absent. Throws (refusing to overwrite) if
+// the file exists but can't be parsed.
 async function readExisting(file: string, format: AgentDef["format"]): Promise<Record<string, unknown> | null> {
   let raw: string
   try {
