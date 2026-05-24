@@ -1,0 +1,9 @@
+node_modules
+dist
+.DS_Store
+*.log
+.env
+.env.local
+
+# Juspay AI CLI — token-bearing configs; do not commit
+.vscode/mcp.json
