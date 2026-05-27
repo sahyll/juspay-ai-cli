@@ -2,13 +2,12 @@
  * Agent registry — the single data table that drives MCP config writing, skills
  * targeting, detection, and auth. Adding a new agent is a new row here.
  *
- * Each row declares WHERE the agent reads its USER-SCOPE (global) MCP config
- * (path/format/container key), HOW one server entry is shaped (`entry`), its
- * `skills` CLI slug, and how the dashboard server is authenticated (`authCmd`
- * if there's a CLI command, plus a human `authHint`).
+ * Each agent has TWO config locations: a `globalPath` (user scope — every project)
+ * and a `projectPath` (cwd-relative — this repo). The chosen scope decides which
+ * we write, and whether `skills` installs globally or into the project.
  *
- * No token handling: we write the server URL only. Each agent runs its own
- * OAuth — some via a CLI command we run during setup, others in-app on first use.
+ * No token handling: we write the server URL only. Each agent authenticates the
+ * dashboard server itself (in-app, or guided by the installed skill).
  */
 
 import fs from "node:fs/promises"
@@ -21,19 +20,20 @@ import { DASHBOARD_MCP_NAME } from "./servers.js"
 const HOME = os.homedir()
 
 export type ConfigFormat = "json" | "toml"
+export type Scope = "global" | "project"
 
 export type AgentDef = {
   id: string
   label: string
-  // --- MCP config target (absolute, user scope) ---
-  configPath: string
+  // --- MCP config targets ---
+  globalPath: string // absolute (user scope)
+  projectPath: string // cwd-relative (this project)
+  globalOnly?: boolean // only works at user scope (e.g. Copilot, VS Code) — always global
   format: ConfigFormat
   containerKey: string // "mcpServers" | "mcp" | "servers" | "mcp_servers"
-  // --- how one server entry is shaped (URL only) ---
-  entry: (url: string) => Record<string, unknown>
+  entry: (url: string) => Record<string, unknown> // one URL-only server entry
   // --- skills + auth ---
   skillsSlug?: string
-  authCmd?: string[] // CLI command to authenticate the dashboard server, if any
   logoutCmd?: string[] // CLI command to clear the agent's cached creds, if any
   authHint: string // human one-liner for how to authenticate
   // --- detection ---
@@ -64,7 +64,8 @@ export const AGENTS: AgentDef[] = [
   {
     id: "claude",
     label: "Claude Code",
-    configPath: path.join(HOME, ".claude.json"),
+    globalPath: path.join(HOME, ".claude.json"),
+    projectPath: ".mcp.json",
     format: "json",
     containerKey: "mcpServers",
     entry: httpType,
@@ -75,13 +76,13 @@ export const AGENTS: AgentDef[] = [
   },
   {
     id: "codex",
-    label: "Codex",
-    configPath: path.join(HOME, ".codex", "config.toml"),
+    label: "Codex CLI",
+    globalPath: path.join(HOME, ".codex", "config.toml"),
+    projectPath: path.join(".codex", "config.toml"),
     format: "toml",
     containerKey: "mcp_servers",
     entry: codexEntry,
     skillsSlug: "codex",
-    authCmd: ["codex", "mcp", "login", DASHBOARD_MCP_NAME],
     logoutCmd: ["codex", "mcp", "logout", DASHBOARD_MCP_NAME],
     authHint: `codex mcp login ${DASHBOARD_MCP_NAME}`,
     bin: "codex",
@@ -90,7 +91,8 @@ export const AGENTS: AgentDef[] = [
   {
     id: "gemini",
     label: "Gemini CLI",
-    configPath: path.join(HOME, ".gemini", "settings.json"),
+    globalPath: path.join(HOME, ".gemini", "settings.json"),
+    projectPath: path.join(".gemini", "settings.json"),
     format: "json",
     containerKey: "mcpServers",
     entry: httpUrlField,
@@ -101,13 +103,13 @@ export const AGENTS: AgentDef[] = [
   },
   {
     id: "opencode",
-    label: "OpenCode",
-    configPath: path.join(HOME, ".config", "opencode", "opencode.json"),
+    label: "OpenCode CLI",
+    globalPath: path.join(HOME, ".config", "opencode", "opencode.json"),
+    projectPath: "opencode.json",
     format: "json",
     containerKey: "mcp",
     entry: opencodeRemote,
     skillsSlug: "opencode",
-    authCmd: ["opencode", "mcp", "auth", DASHBOARD_MCP_NAME],
     logoutCmd: ["opencode", "mcp", "logout", DASHBOARD_MCP_NAME],
     authHint: `opencode mcp auth ${DASHBOARD_MCP_NAME}`,
     bin: "opencode",
@@ -115,8 +117,10 @@ export const AGENTS: AgentDef[] = [
   },
   {
     id: "copilot",
-    label: "Copilot CLI",
-    configPath: path.join(HOME, ".copilot", "mcp-config.json"),
+    label: "GitHub Copilot CLI",
+    globalPath: path.join(HOME, ".copilot", "mcp-config.json"),
+    projectPath: ".mcp.json",
+    globalOnly: true, // Copilot doesn't read workspace (project) MCP config
     format: "json",
     containerKey: "mcpServers",
     entry: httpType,
@@ -128,7 +132,8 @@ export const AGENTS: AgentDef[] = [
   {
     id: "cursor",
     label: "Cursor",
-    configPath: path.join(HOME, ".cursor", "mcp.json"),
+    globalPath: path.join(HOME, ".cursor", "mcp.json"),
+    projectPath: path.join(".cursor", "mcp.json"),
     format: "json",
     containerKey: "mcpServers",
     entry: urlOnly,
@@ -139,7 +144,8 @@ export const AGENTS: AgentDef[] = [
   {
     id: "windsurf",
     label: "Windsurf",
-    configPath: path.join(HOME, ".codeium", "windsurf", "mcp_config.json"),
+    globalPath: path.join(HOME, ".codeium", "windsurf", "mcp_config.json"),
+    projectPath: path.join(".windsurf", "mcp_config.json"),
     format: "json",
     containerKey: "mcpServers",
     entry: windsurfUrl,
@@ -150,7 +156,9 @@ export const AGENTS: AgentDef[] = [
   {
     id: "vscode",
     label: "VS Code / Copilot",
-    configPath: vscodeUserMcp(),
+    globalPath: vscodeUserMcp(),
+    projectPath: path.join(".vscode", "mcp.json"),
+    globalOnly: true, // configured at user scope, not per-project
     format: "json",
     containerKey: "servers",
     entry: httpType,
@@ -164,9 +172,9 @@ export function findAgent(id: string): AgentDef | undefined {
   return AGENTS.find((a) => a.id === id)
 }
 
-// Absolute path to the agent's user-scope config file.
-export function configFileFor(agent: AgentDef): string {
-  return agent.configPath
+// The config file for an agent at a given scope (project = relative to cwd).
+export function configFileFor(agent: AgentDef, scope: Scope): string {
+  return scope === "global" ? agent.globalPath : path.join(process.cwd(), agent.projectPath)
 }
 
 // Which agents to configure: any detected as installed/used on this machine.

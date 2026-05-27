@@ -8,17 +8,17 @@ import { removeMcp } from "./mcp-writer.js"
 import { DASHBOARD_MCP_NAME, PACKAGE_NAME } from "./servers.js"
 import { runSetup, type SetupResult } from "./setup.js"
 import { removeSkills } from "./skills-installer.js"
-import { banner, done, info, summaryBox, warn } from "./ui.js"
+import { banner, done, info, summaryBox } from "./ui.js"
 
 function showHelp(): void {
   banner()
   process.stdout.write(`  Usage: npx ${PACKAGE_NAME} [command]\n\n`)
-  process.stdout.write(pc.dim("  Detects your AI agents, lets you pick which get the Juspay MCP + skills,\n"))
-  process.stdout.write(pc.dim("  and authenticates the ones that support it. Each agent owns its own OAuth.\n\n"))
+  process.stdout.write(pc.dim("  Detects your AI agents, lets you pick which ones (and global or project),\n"))
+  process.stdout.write(pc.dim("  then adds the Juspay MCP + skills. Each agent authenticates the MCP itself.\n\n"))
   process.stdout.write("  Commands:\n")
-  process.stdout.write("    (no command)   Pick agents, add the Juspay MCP + skills, authenticate\n")
-  process.stdout.write("    uninstall      Remove the Juspay MCP + skills (and sign out) from all agents\n")
-  process.stdout.write("    list           Show which agents have the Juspay MCP configured\n")
+  process.stdout.write("    (no command)   Pick agents + scope, add the Juspay MCP + skills\n")
+  process.stdout.write("    uninstall      Remove the Juspay MCP + skills (both scopes) and sign out\n")
+  process.stdout.write("    list           Show which agents have the Juspay MCP, and at which scope\n")
   process.stdout.write("    help           Show this help\n\n")
 }
 
@@ -33,7 +33,7 @@ function nextSteps(result: SetupResult): void {
       process.stdout.write("    " + pc.dim(`• ${a.label}: `) + a.authHint + "\n")
     }
   } else {
-    process.stdout.write("  " + pc.dim("All set — your agents are configured and authenticated.") + "\n")
+    process.stdout.write("  " + pc.dim("All set — your agents are configured.") + "\n")
   }
   process.stdout.write("\n  " + pc.dim("Remove everything: ") + pc.cyan(`npx ${PACKAGE_NAME} uninstall`) + "\n\n")
 }
@@ -41,12 +41,10 @@ function nextSteps(result: SetupResult): void {
 function printSetupSummary(result: SetupResult): void {
   const rows: { label: string; value: string }[] = [
     { label: "Agents", value: result.configured.map((a) => a.label).join(", ") },
+    { label: "Scope", value: result.scope === "global" ? "Global (all projects)" : "This project" },
     { label: "MCPs", value: "docs-mcp-server, juspay-mcp" },
     { label: "Skills", value: "integrate" },
   ]
-  if (result.authenticated.length > 0) {
-    rows.push({ label: "Authenticated", value: result.authenticated.map((a) => a.label).join(", ") })
-  }
   summaryBox("Setup complete", rows)
   nextSteps(result)
 }
@@ -54,7 +52,11 @@ function printSetupSummary(result: SetupResult): void {
 async function runUninstall(): Promise<void> {
   const removedAgents: AgentDef[] = []
   for (const a of AGENTS) {
-    if (await removeMcp(a).catch(() => false)) removedAgents.push(a)
+    let removedAny = false
+    for (const scope of ["global", "project"] as const) {
+      if (await removeMcp(a, scope).catch(() => false)) removedAny = true
+    }
+    if (removedAny) removedAgents.push(a)
   }
   if (removedAgents.length > 0) done(`Removed Juspay MCP from: ${removedAgents.map((a) => a.label).join(", ")}`)
   else info("• No Juspay MCP entries found")
@@ -77,28 +79,33 @@ async function runUninstall(): Promise<void> {
 function runCmdQuiet(cmd: string[]): Promise<boolean> {
   return new Promise((resolve) => {
     const [bin, ...args] = cmd
-    const child = spawn(bin, args, { stdio: "ignore" })
+    // Windows: agent CLIs are .cmd shims; spawn needs a shell to launch them.
+    const child = spawn(bin, args, { stdio: "ignore", shell: process.platform === "win32" })
     child.on("error", () => resolve(false))
     child.on("exit", (code) => resolve(code === 0))
   })
 }
 
 async function runList(): Promise<void> {
-  const configured: string[] = []
+  const found: string[] = []
   for (const a of AGENTS) {
-    try {
-      const raw = await fs.readFile(configFileFor(a), "utf8")
-      if (raw.includes(DASHBOARD_MCP_NAME)) configured.push(a.label)
-    } catch {
-      // no config for this agent
+    const scopes: string[] = []
+    for (const scope of ["global", "project"] as const) {
+      try {
+        const raw = await fs.readFile(configFileFor(a, scope), "utf8")
+        if (raw.includes(DASHBOARD_MCP_NAME)) scopes.push(scope)
+      } catch {
+        // no config at this scope
+      }
     }
+    if (scopes.length > 0) found.push(`${a.label} (${scopes.join(", ")})`)
   }
-  if (configured.length === 0) {
+  if (found.length === 0) {
     process.stdout.write("  " + pc.yellow("⚠ ") + `No agents configured. Run \`npx ${PACKAGE_NAME}\`.\n`)
     return
   }
   process.stdout.write("  " + pc.cyan("Juspay MCP is configured in:") + "\n")
-  for (const label of configured) process.stdout.write(`    • ${label}\n`)
+  for (const label of found) process.stdout.write(`    • ${label}\n`)
 }
 
 async function main(): Promise<void> {

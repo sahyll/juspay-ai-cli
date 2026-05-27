@@ -1,10 +1,9 @@
 /**
- * Generic MCP config writer/remover. Driven by the agent registry — one code
- * path for every agent, JSON and TOML.
+ * Generic MCP config writer/remover, scope-aware. Driven by the agent registry —
+ * one code path for every agent, JSON and TOML, global or project scope.
  *
- * We write two URL-only server entries (docs + dashboard) into the agent's
- * user-scope config under its container key, preserving everything else. No
- * token is written: each agent self-authenticates the dashboard server.
+ * We write two URL-only server entries (docs + dashboard) into the agent's config
+ * for the chosen scope, preserving everything else. No token is written.
  *
  * Safety: if a config file exists but doesn't parse, we ABORT rather than
  * overwrite — these are real user files (e.g. ~/.claude.json) we must not clobber.
@@ -14,7 +13,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml"
 
-import { configFileFor, type AgentDef } from "./agents.js"
+import { configFileFor, type AgentDef, type Scope } from "./agents.js"
 import {
   DASHBOARD_MCP_NAME,
   DOCS_MCP_ENDPOINT,
@@ -23,27 +22,23 @@ import {
   OUR_MCP_NAMES,
 } from "./servers.js"
 
-// Write our two MCP servers into the agent's config. Returns the file path written.
-export async function writeMcp(agent: AgentDef): Promise<string> {
-  const file = configFileFor(agent)
+// Write our two MCP servers into the agent's config for `scope`.
+export async function writeMcp(agent: AgentDef, scope: Scope): Promise<void> {
+  const file = configFileFor(agent, scope)
   const entries: Record<string, unknown> = {
     [DOCS_MCP_NAME]: agent.entry(DOCS_MCP_ENDPOINT),
     [DASHBOARD_MCP_NAME]: agent.entry(JUSPAY_MCP_ENDPOINT),
   }
 
   await fs.mkdir(path.dirname(file), { recursive: true })
-  if (agent.format === "json") {
-    await mergeJson(file, agent.containerKey, entries)
-  } else {
-    await mergeToml(file, agent.containerKey, entries)
-  }
-  return file
+  if (agent.format === "json") await mergeJson(file, agent.containerKey, entries)
+  else await mergeToml(file, agent.containerKey, entries)
 }
 
-// Remove our two MCP servers from the agent's config; leave everything else.
-// Returns true if anything was removed.
-export async function removeMcp(agent: AgentDef): Promise<boolean> {
-  const file = configFileFor(agent)
+// Remove our two MCP servers from the agent's config at `scope`. Returns true if
+// anything was removed.
+export async function removeMcp(agent: AgentDef, scope: Scope): Promise<boolean> {
+  const file = configFileFor(agent, scope)
   let raw: string
   try {
     raw = await fs.readFile(file, "utf8")

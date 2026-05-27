@@ -20,5 +20,5 @@ export const SKILLS_PACKAGE = "sahyll/juspay-skills/skills/integrate"
 export const PACKAGE_NAME = "@sahyll/ai-2"
 
 // Single source of truth for the CLI version + user-agent. Update on every release.
-export const CLI_VERSION = "0.6.0"
+export const CLI_VERSION = "0.7.0"
 export const USER_AGENT = `juspay-ai-cli/${CLI_VERSION} (+https://juspay.in)`
